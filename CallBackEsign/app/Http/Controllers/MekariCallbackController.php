@@ -141,6 +141,20 @@ class MekariCallbackController extends Controller
                 throw new \Exception('Failed to create document object in M-Files.');
             }
 
+            // --- Kirim Notifikasi Email ---
+            $recipientEmail = env('NOTIFICATION_EMAIL', 'admin@example.com');
+            try {
+                \Illuminate\Support\Facades\Mail::raw("Dokumen '{$documentName}' telah selesai ditandatangani melalui Mekari eSign dan berhasil disimpan ke M-Files.", function ($message) use ($recipientEmail, $documentName) {
+                    $message->to($recipientEmail)
+                            ->subject("Notifikasi M-Files: Dokumen {$documentName} Selesai");
+                });
+                Log::info("Email notifikasi berhasil dikirim ke: {$recipientEmail}");
+            } catch (\Exception $e) {
+                // Jangan gagalkan seluruh proses hanya karena email gagal
+                Log::warning('Email Notification Failed: ' . $e->getMessage());
+            }
+            // ------------------------------
+
             return response()->json([
                 'message' => 'Document successfully processed and uploaded to M-Files',
                 'mfiles_data' => $createObjectResponse->json()
