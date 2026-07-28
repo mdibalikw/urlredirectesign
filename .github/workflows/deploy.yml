@@ -22,7 +22,7 @@ jobs:
     - name: ?? Install Dependencies
       run: |
         cd CallBackEsign
-        composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --ignore-platform-reqs
+        composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --ignore-platform-reqs --no-dev
       
     - name: ?? Sync files to FTP
       uses: SamKirkland/FTP-Deploy-Action@v4.3.5
