@@ -32,6 +32,9 @@ jobs:
         password: ${{ secrets.FTP_PASSWORD }}
         local-dir: ./CallBackEsign/
         server-dir: /
+        port: 21
+        protocol: ftp
+        timeout: 180000
         exclude: |
           **/.git*
           **/.git*/**
