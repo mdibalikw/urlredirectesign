@@ -1,0 +1,39 @@
+name: Deploy Laravel via FTP
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  web-deploy:
+    name: ?? Deploy
+    runs-on: ubuntu-latest
+    steps:
+    - name: ?? Get latest code
+      uses: actions/checkout@v4
+    
+    - name: ??? Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        
+    - name: ?? Install Dependencies
+      run: |
+        cd CallBackEsign
+        composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+      
+    - name: ?? Sync files to FTP
+      uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+      with:
+        server: ${{ secrets.FTP_SERVER }}
+        username: ${{ secrets.FTP_USERNAME }}
+        password: ${{ secrets.FTP_PASSWORD }}
+        local-dir: ./CallBackEsign/
+        server-dir: /
+        exclude: |
+          **/.git*
+          **/.git*/**
+          **/node_modules/**
+

@@ -20,14 +20,17 @@ class MekariCallbackController extends Controller
         $documentId = $payload['document_id'] ?? $payload['id'] ?? null;
         $documentName = $payload['document_name'] ?? 'signed_document.pdf';
 
-        if (!$documentId) {
-            return response()->json(['error' => 'Document ID not found in payload'], 400);
+        $mfilesObjectId = $request->query('mfiles_object_id');
+        $mfilesType = $request->query('mfiles_type', 0);
+
+        if (!$mfilesObjectId) {
+            return response()->json(['error' => 'mfiles_object_id query parameter is required'], 400);
         }
 
         try {
             // 3. Download dokumen dari Mekari menggunakan Endpoint GET /documents/:id/download
-            $mekariApiUrl = env('MEKARI_API_URL', 'https://api.mekari.com/v1'); // Sesuaikan dengan base URL Mekari API
-            $mekariAuthToken = env('MEKARI_AUTH_TOKEN'); // Token untuk mengakses API Mekari
+            $mekariApiUrl = env('MEKARI_API_URL', 'https://api.mekari.com/v1');
+            $mekariAuthToken = env('MEKARI_AUTH_TOKEN');
 
             $documentResponse = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $mekariAuthToken,
@@ -40,14 +43,11 @@ class MekariCallbackController extends Controller
 
             $fileContents = $documentResponse->body();
 
-            // 3. Upload ke M-Files DMS
+            // 4. Update ke M-Files DMS
             $mfilesApiUrl = env('MFILES_API_URL');
             $mfilesUsername = env('MFILES_USERNAME');
             $mfilesPassword = env('MFILES_PASSWORD');
             $mfilesVault = env('MFILES_VAULT');
-
-            // Ini adalah contoh logic autentikasi & upload ke M-Files.
-            // Implementasi nyata membutuhkan struktur request yang sesuai dengan M-Files Web Service (REST API)
 
             // a. Dapatkan Authentication Token M-Files
             $authResponse = Http::post("{$mfilesApiUrl}/server/authenticationtokens", [
@@ -62,83 +62,72 @@ class MekariCallbackController extends Controller
 
             $mfilesToken = $authResponse->json('Value');
 
-            // b. Upload file ke M-Files temporary upload endpoint
-            $uploadResponse = Http::withHeaders([
+            // b. Check Out Object di M-Files
+            $checkoutResponse = Http::withHeaders([
+                'X-Authentication' => $mfilesToken,
+                'Content-Type' => 'application/json'
+            ])->post("{$mfilesApiUrl}/objects/{$mfilesType}/{$mfilesObjectId}/latest/checkedout", [
+                'Value' => true
+            ]);
+
+            if ($checkoutResponse->failed()) {
+                throw new \Exception('Failed to check out object in M-Files: ' . $checkoutResponse->body());
+            }
+
+            $checkedOutObject = $checkoutResponse->json();
+            $checkedOutVersion = $checkedOutObject['ObjVer']['Version'];
+
+            // c. Dapatkan ID File lama untuk ditimpa
+            $filesResponse = Http::withHeaders([
+                'X-Authentication' => $mfilesToken
+            ])->get("{$mfilesApiUrl}/objects/{$mfilesType}/{$mfilesObjectId}/{$checkedOutVersion}/files");
+
+            $filesData = $filesResponse->json();
+            if (empty($filesData)) {
+                throw new \Exception('No files found in the M-Files object to replace.');
+            }
+            $fileId = $filesData[0]['ID'];
+
+            // d. Timpa file content (Replace File)
+            $replaceFileResponse = Http::withHeaders([
                 'X-Authentication' => $mfilesToken,
                 'Content-Type' => 'application/octet-stream',
-            ])->send('POST', "{$mfilesApiUrl}/files", [
+            ])->send('PUT', "{$mfilesApiUrl}/objects/{$mfilesType}/{$mfilesObjectId}/{$checkedOutVersion}/files/{$fileId}/content", [
                 'body' => $fileContents
             ]);
 
-            if ($uploadResponse->failed()) {
-                throw new \Exception('Failed to upload temporary file to M-Files.');
+            if ($replaceFileResponse->failed()) {
+                throw new \Exception('Failed to replace file content in M-Files: ' . $replaceFileResponse->body());
             }
 
-            $uploadData = $uploadResponse->json();
-            $uploadId = $uploadData['UploadID'] ?? $uploadData[0]['UploadID'];
-
-            $mfilesClassId = (int) env('MFILES_CLASS_ID', 2);
-            $mfilesWorkflowId = (int) env('MFILES_WORKFLOW_ID', 101);
-            $mfilesStateId = env('MFILES_STATE_ID') ? (int) env('MFILES_STATE_ID') : null;
-
-            $propertyValues = [
-                [
-                    'PropertyDef' => 0, // Name or Title
-                    'TypedValue' => [
-                        'DataType' => 1, // Text
-                        'Value' => $documentName
-                    ]
-                ],
-                [
-                    'PropertyDef' => 100, // Class
-                    'TypedValue' => [
-                        'DataType' => 9, // Lookup
-                        'Lookup' => [
-                            'Item' => $mfilesClassId
-                        ]
-                    ]
-                ],
-                [
-                    'PropertyDef' => 38, // Workflow
-                    'TypedValue' => [
-                        'DataType' => 9, // Lookup
-                        'Lookup' => [
-                            'Item' => $mfilesWorkflowId
-                        ]
-                    ]
-                ]
-            ];
-
-            if ($mfilesStateId) {
-                $propertyValues[] = [
-                    'PropertyDef' => 39, // State
-                    'TypedValue' => [
-                        'DataType' => 9, // Lookup
-                        'Lookup' => [
-                            'Item' => $mfilesStateId
-                        ]
-                    ]
-                ];
-            }
-
-            // c. Buat Object/Document di M-Files menggunakan UploadID tersebut
-            // Sesuai postman collection, tambahkan ?checkIn=true agar file otomatis ter-check-in di M-Files
-            $createObjectResponse = Http::withHeaders([
+            // e. Ubah State Object menjadi 214 (Signed)
+            $stateUpdateResponse = Http::withHeaders([
                 'X-Authentication' => $mfilesToken,
-                'Content-Type' => 'application/json',
-            ])->post("{$mfilesApiUrl}/objects/0?checkIn=true", [
-                'PropertyValues' => $propertyValues,
-                'Files' => [
-                    [
-                        'UploadID' => $uploadId,
-                        'Title' => $documentName,
-                        'Extension' => 'pdf'
+                'Content-Type' => 'application/json'
+            ])->put("{$mfilesApiUrl}/objects/{$mfilesType}/{$mfilesObjectId}/{$checkedOutVersion}/properties/39", [
+                'PropertyDef' => 39,
+                'TypedValue' => [
+                    'DataType' => 9, // Lookup
+                    'Lookup' => [
+                        'Item' => 214 // State 214 (Signed)
                     ]
                 ]
             ]);
 
-            if ($createObjectResponse->failed()) {
-                throw new \Exception('Failed to create document object in M-Files.');
+            if ($stateUpdateResponse->failed()) {
+                Log::warning("Gagal mengubah state object M-Files ke 214: " . $stateUpdateResponse->body());
+            }
+
+            // f. Check In Object di M-Files
+            $checkinResponse = Http::withHeaders([
+                'X-Authentication' => $mfilesToken,
+                'Content-Type' => 'application/json'
+            ])->post("{$mfilesApiUrl}/objects/{$mfilesType}/{$mfilesObjectId}/latest/checkedout", [
+                'Value' => false
+            ]);
+
+            if ($checkinResponse->failed()) {
+                throw new \Exception('Failed to check in object in M-Files: ' . $checkinResponse->body());
             }
 
             // --- Kirim Notifikasi Email ---
@@ -157,7 +146,7 @@ class MekariCallbackController extends Controller
 
             return response()->json([
                 'message' => 'Document successfully processed and uploaded to M-Files',
-                'mfiles_data' => $createObjectResponse->json()
+                'mfiles_data' => $checkinResponse->json()
             ]);
 
         } catch (\Exception $e) {
